@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.DS_Store
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Secrets and local data (client reviews live in the DB)
+.env
+*.db
