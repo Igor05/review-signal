@@ -23,24 +23,39 @@ reviews that don't:
 star_cost = avg_rating(reviews without the theme) − avg_rating(reviews with the theme)
 ```
 
-From the bundled sample data (149 synthetic restaurant reviews):
-
-| Theme                  | Share of reviews | Star cost |
-| ---------------------- | ---------------- | --------- |
-| Portion size too small | 18.8%            | −1.54★    |
-| Online order accuracy  | 6.0%             | −2.00★    |
-| Bathroom cleanliness   | 17.4%            | −0.91★    |
-
-Online order errors appear in a third as many reviews as portion complaints, but each one
-costs more. Star cost is only computed when the upload has a usable rating column and a theme
-has at least three rated reviews.
+A positive star cost is rating lost: reviews that mention the theme score that many stars lower.
+The report shows it as a loss, so a star cost of 1.54 appears as `−1.54★`.
 
 Each theme also gets:
 
 - **share** of reviews that mention it
 - **average severity** (1–5, assigned per mention by the model)
-- **trend**: the share in the most recent 120 days compared with the whole period (worsening / steady / improving)
-- **priority**: share × severity × star cost × trend, used to order the work list
+- **trend**: the theme's share in the most recent 120 days compared with its share over the
+  whole period. Above 1.25× the overall share is *worsening*, below 0.75× is *improving*,
+  anything between is *steady*. Without enough dated reviews it is *unknown*.
+- **priority**, which orders the work list:
+
+```
+priority = share × 100 × (avg_severity / 3) × (star_cost / 0.4) × trend_factor
+
+trend_factor: worsening 1.35 · steady 1.0 · improving 0.7 · unknown 1.0
+```
+
+  Star cost is floored at 0.05 in this formula, and 0.35 is used when there is no rating data.
+  Praise themes are listed separately and get priority 0.
+
+From the bundled sample data (149 synthetic restaurant reviews), the top of the work list:
+
+| Theme                  | Share | Severity | Star cost | Trend     | Priority |
+| ---------------------- | ----- | -------- | --------- | --------- | -------- |
+| Portion size too small | 18.8% | 3.0      | 1.54      | steady    | 72.3     |
+| Online order accuracy  | 6.0%  | 4.0      | 2.00      | worsening | 54.4     |
+| Bathroom cleanliness   | 17.4% | 3.1      | 0.91      | steady    | 41.2     |
+
+Online order errors appear in a third as many reviews as portion complaints, but each one
+costs more and the problem is growing, so it ranks above bathroom cleanliness, which is
+mentioned almost three times as often. Star cost is only computed when the upload has a usable
+rating column and a theme has at least three rated reviews.
 
 ## What it does
 
