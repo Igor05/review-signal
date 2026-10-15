@@ -10,7 +10,7 @@ from . import prompts
 from .db import cursor
 from .ingest import today
 
-MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5")
+MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5-5")
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "20"))
 CONCURRENCY = int(os.getenv("CONCURRENCY", "4"))
 
@@ -38,7 +38,9 @@ def _strip_json(raw: str) -> str:
 
 
 async def _call(client: AsyncAnthropic, system: str, user: str,
-                max_tokens: int = 8000, retries: int = 2) -> dict:
+                max_tokens: int = 16000, retries: int = 2) -> dict:
+    # Current models think before answering by default, and thinking tokens count
+    # against max_tokens. A tight cap truncates the JSON mid-string.
     last_error = None
     for attempt in range(retries + 1):
         try:
@@ -48,6 +50,8 @@ async def _call(client: AsyncAnthropic, system: str, user: str,
                 system=system,
                 messages=[{"role": "user", "content": user}],
             )
+            if response.stop_reason in ("max_tokens", "refusal"):
+                raise RuntimeError(f"Model stopped early: stop_reason={response.stop_reason}")
             text = "".join(block.text for block in response.content if block.type == "text")
             return json.loads(_strip_json(text))
         except (json.JSONDecodeError, ValueError) as exc:
@@ -106,14 +110,24 @@ async def run_analysis(run_id: int, project_id: int):
                 return data.get("results", [])
 
         extracted: list[dict] = []
-        for chunk in await asyncio.gather(*(process(b) for b in batches), return_exceptions=True):
+        failed_reviews = 0
+        first_error = None
+        chunks = await asyncio.gather(*(process(b) for b in batches), return_exceptions=True)
+        for batch, chunk in zip(batches, chunks):
             if isinstance(chunk, Exception):
-                # One bad batch should not sink a 900-review run.
+                # One bad batch should not sink a 900-review run, but a report built
+                # on a fraction of the corpus would be silently wrong.
+                failed_reviews += len(batch)
+                first_error = first_error or chunk
                 continue
             extracted.extend(chunk)
 
         if not extracted:
-            raise RuntimeError("Extraction produced no results. Check the API key and model name.")
+            raise RuntimeError(f"Extraction produced no results. Check the API key and model name. ({first_error})")
+        if failed_reviews > len(reviews) * 0.25:
+            raise RuntimeError(
+                f"Extraction failed for {failed_reviews} of {len(reviews)} reviews: {first_error}"
+            )
 
         # Flatten into (review_id, topic) pairs, dropping anything malformed.
         valid_ids = {r["id"] for r in reviews}
@@ -161,7 +175,6 @@ async def run_analysis(run_id: int, project_id: int):
                 client,
                 prompts.CONSOLIDATE_SYSTEM,
                 prompts.consolidate_user_prompt(label_counts[i:i + SLICE], business_type),
-                max_tokens=8000,
             )
             themes_spec.extend(data.get("themes", []))
 
@@ -200,6 +213,15 @@ async def run_analysis(run_id: int, project_id: int):
                     "members": [topic["label"]],
                 })
                 label_to_theme[topic["label"]] = key
+
+        # Polarity comes from what reviewers actually said, not from the consolidation
+        # pass, which sometimes files praise ("best carbonara") under a negative theme
+        # and pushes it into the work list.
+        sentiments: dict[str, Counter] = {}
+        for topic in raw_topics:
+            sentiments.setdefault(label_to_theme[topic["label"]], Counter())[topic["sentiment"]] += 1
+        for key, counts in sentiments.items():
+            merged[key]["polarity"] = "positive" if counts["positive"] > sum(counts.values()) / 2 else "negative"
 
         _set_run(run_id, stage="writing")
 
@@ -261,5 +283,4 @@ async def write_summary(project_id: int, report: dict) -> dict:
         make_client(),
         prompts.SUMMARY_SYSTEM,
         json.dumps(payload, ensure_ascii=False),
-        max_tokens=2000,
     )

@@ -15,7 +15,7 @@ app = FastAPI(title="Review Signal")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","),
+    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5174").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
